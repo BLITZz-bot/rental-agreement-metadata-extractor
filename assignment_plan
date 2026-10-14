@@ -1,0 +1,568 @@
+# 📄 USEReady Assignment-1 — Complete Code Guide
+> You will manually create each file below. Read each section, understand it, then type/paste it yourself.
+
+---
+
+## 📁 Project Structure to Create
+
+First, manually create these folders and empty files inside your `Assignment-1/` folder:
+
+```
+Assignment-1/
+│
+├── data/
+│   ├── train/          ← already exists
+│   ├── train.csv       ← already exists
+│   ├── test/           ← add your test files here later
+│   └── test.csv        ← add later
+│
+├── src/
+│   ├── __init__.py         ← empty file (just create it)
+│   ├── document_loader.py
+│   ├── extractor.py
+│   └── evaluate.py
+│
+├── predictions/            ← folder (create it, leave empty)
+│
+├── main.py
+├── requirements.txt
+├── README.md
+└── api.py                  ← optional REST API
+```
+
+---
+
+## Step 0 — Get Your Gemini API Key
+
+1. Go to → **https://aistudio.google.com/app/apikey**
+2. Click **"Create API Key"**
+3. Copy the key — looks like: `AIzaSy...`
+4. You'll paste it in `extractor.py` later
+
+---
+
+## Step 1 — `requirements.txt`
+
+Create this file at the root of `Assignment-1/`:
+
+```
+google-generativeai>=0.7.0
+python-docx>=1.1.0
+Pillow>=10.0.0
+pandas>=2.0.0
+fastapi>=0.111.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9
+```
+
+Then run in terminal:
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Step 2 — `src/document_loader.py`
+
+**What it does:** Reads a `.docx` or `.png` file and returns the content so the extractor can use it.
+
+```python
+# src/document_loader.py
+
+import docx                     # reads .docx files
+from PIL import Image           # reads .png image files
+import os
+
+
+def load_document(filepath: str):
+    """
+    Given a file path, return:
+      - (str, "text")  for DOCX files  → returns extracted plain text
+      - (Image, "image") for PNG files → returns PIL Image object
+    """
+    ext = os.path.splitext(filepath)[1].lower()   # get extension like .docx or .png
+
+    if ext == ".docx":
+        doc = docx.Document(filepath)
+        # Join all non-empty paragraph texts with newlines
+        text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        return text, "text"
+
+    elif ext == ".png":
+        image = Image.open(filepath)
+        return image, "image"
+
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+```
+
+---
+
+## Step 3 — `src/extractor.py`
+
+**What it does:** Sends the document content to Gemini and asks it to extract the 6 fields as JSON.
+
+```python
+# src/extractor.py
+
+import google.generativeai as genai
+import json
+import re
+
+# ──────────────────────────────────────────
+# PASTE YOUR GEMINI API KEY HERE
+API_KEY = "YOUR_GEMINI_API_KEY_HERE"
+# ──────────────────────────────────────────
+
+genai.configure(api_key=API_KEY)
+
+# We use Gemini 1.5 Flash — fast, free tier, handles text + images
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+
+# This is the instruction we send to Gemini along with the document
+PROMPT = """
+You are a legal document analysis assistant specializing in rental agreements.
+
+Extract the following 6 fields from the rental agreement document provided:
+
+1. Agreement Value     → The monthly rent amount (number only, e.g. 4000)
+2. Agreement Start Date → The date the agreement starts (format: DD.MM.YYYY)
+3. Agreement End Date  → The date the agreement ends (format: DD.MM.YYYY)
+                         If not explicitly mentioned but duration is given 
+                         (e.g. "11 months from April 2010"), CALCULATE the end date.
+4. Renewal Notice (Days) → Number of days notice required (number only, e.g. 90)
+5. Party One           → The landlord / owner / lessor name (full name as written)
+6. Party Two           → The tenant / resident / lessee name (full name as written)
+
+IMPORTANT RULES:
+- Return ONLY a valid JSON object. No explanation, no extra text.
+- Dates must always be in DD.MM.YYYY format even if written as "20th day of May 2007"
+- Agreement Value must be a plain number (no currency symbol, no commas)
+- If a field is not found in the document, use empty string ""
+- Party names: take the name exactly as written, do not add or remove anything
+
+Return this exact JSON structure:
+{
+  "Agreement Value": "",
+  "Agreement Start Date": "",
+  "Agreement End Date": "",
+  "Renewal Notice (Days)": "",
+  "Party One": "",
+  "Party Two": ""
+}
+"""
+
+
+def extract_fields(content, content_type: str) -> dict:
+    """
+    content      → either a string (for DOCX) or PIL Image (for PNG)
+    content_type → "text" or "image"
+
+    Returns a dict with the 6 extracted fields.
+    """
+
+    if content_type == "text":
+        # Send the document text + prompt to Gemini
+        response = model.generate_content([PROMPT, content])
+
+    elif content_type == "image":
+        # Send the image + prompt to Gemini (it will OCR + understand)
+        response = model.generate_content([PROMPT, content])
+
+    raw_text = response.text.strip()
+
+    # Gemini sometimes wraps JSON in ```json ... ``` blocks — clean that up
+    raw_text = re.sub(r"```json\s*", "", raw_text)
+    raw_text = re.sub(r"```\s*", "", raw_text)
+    raw_text = raw_text.strip()
+
+    # Parse the JSON response
+    try:
+        result = json.loads(raw_text)
+    except json.JSONDecodeError:
+        # If Gemini returned something unexpected, return empty fields
+        print(f"  ⚠️  Could not parse JSON. Raw response was:\n{raw_text}")
+        result = {
+            "Agreement Value": "",
+            "Agreement Start Date": "",
+            "Agreement End Date": "",
+            "Renewal Notice (Days)": "",
+            "Party One": "",
+            "Party Two": "",
+        }
+
+    return result
+```
+
+---
+
+## Step 4 — `src/evaluate.py`
+
+**What it does:** Compares your predictions CSV against the ground truth CSV and prints per-field Recall.
+
+```python
+# src/evaluate.py
+
+import pandas as pd
+
+
+def normalize(value) -> str:
+    """Clean a value for fair comparison: lowercase, strip spaces."""
+    if pd.isna(value):
+        return ""
+    return str(value).strip().lower()
+
+
+def calculate_recall(predictions_csv: str, ground_truth_csv: str):
+    """
+    predictions_csv  → path to your output file (e.g. predictions/train_predictions.csv)
+    ground_truth_csv → path to the answer key (e.g. data/train.csv)
+
+    Prints per-field Recall score.
+    """
+
+    pred_df  = pd.read_csv(predictions_csv)
+    truth_df = pd.read_csv(ground_truth_csv)
+
+    # Match rows by File Name
+    merged = pd.merge(pred_df, truth_df, on="File Name", suffixes=("_pred", "_true"))
+
+    fields = [
+        "Agreement Value",
+        "Agreement Start Date",
+        "Agreement End Date",
+        "Renewal Notice (Days)",
+        "Party One",
+        "Party Two",
+    ]
+
+    print("\n" + "="*50)
+    print("  PER-FIELD RECALL SCORES")
+    print("="*50)
+
+    total_recall = 0
+
+    for field in fields:
+        pred_col  = field + "_pred"
+        truth_col = field + "_true"
+
+        # Count exact matches (after normalization)
+        true_count  = sum(
+            normalize(merged[pred_col][i]) == normalize(merged[truth_col][i])
+            for i in range(len(merged))
+        )
+        total_count = len(merged)
+        recall = true_count / total_count if total_count > 0 else 0
+        total_recall += recall
+
+        print(f"  {field:<30} → {true_count}/{total_count} = {recall:.2f}")
+
+    avg = total_recall / len(fields)
+    print("="*50)
+    print(f"  AVERAGE RECALL                 → {avg:.2f}")
+    print("="*50 + "\n")
+```
+
+---
+
+## Step 5 — `main.py`
+
+**What it does:** The main script you run. It loops through all files in a folder, extracts fields, and saves a `predictions.csv`.
+
+```python
+# main.py
+
+import os
+import pandas as pd
+from src.document_loader import load_document
+from src.extractor import extract_fields
+from src.evaluate import calculate_recall
+
+
+# ─────────────────────────────────────────
+# CONFIGURATION — change paths here
+# ─────────────────────────────────────────
+TRAIN_FOLDER     = "data/train"
+TRAIN_CSV        = "data/train.csv"
+
+TEST_FOLDER      = "data/test"       # add your test files here later
+TEST_CSV         = "data/test.csv"   # add later
+
+TRAIN_OUTPUT     = "predictions/train_predictions.csv"
+TEST_OUTPUT      = "predictions/test_predictions.csv"
+# ─────────────────────────────────────────
+
+
+def process_folder(folder_path: str, output_csv: str):
+    """
+    Loops through all .docx and .png files in folder_path.
+    Extracts 6 fields from each file.
+    Saves results to output_csv.
+    """
+
+    results = []
+    supported = (".docx", ".png")
+
+    files = [f for f in os.listdir(folder_path) if f.lower().endswith(supported)]
+    print(f"\nFound {len(files)} files in '{folder_path}'")
+
+    for filename in files:
+        filepath = os.path.join(folder_path, filename)
+        # File Name column = filename without extension (to match train.csv)
+        file_name_key = os.path.splitext(filename)[0]
+
+        print(f"  Processing: {filename} ...", end=" ")
+
+        try:
+            content, content_type = load_document(filepath)
+            fields = extract_fields(content, content_type)
+            fields["File Name"] = file_name_key
+            results.append(fields)
+            print("✅ Done")
+
+        except Exception as e:
+            print(f"❌ Error: {e}")
+            results.append({
+                "File Name": file_name_key,
+                "Agreement Value": "",
+                "Agreement Start Date": "",
+                "Agreement End Date": "",
+                "Renewal Notice (Days)": "",
+                "Party One": "",
+                "Party Two": "",
+            })
+
+    # Create DataFrame and reorder columns to match train.csv format
+    column_order = [
+        "File Name",
+        "Agreement Value",
+        "Agreement Start Date",
+        "Agreement End Date",
+        "Renewal Notice (Days)",
+        "Party One",
+        "Party Two",
+    ]
+
+    df = pd.DataFrame(results)[column_order]
+
+    # Make sure predictions folder exists
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    df.to_csv(output_csv, index=False)
+    print(f"\n✅ Predictions saved to: {output_csv}")
+    return output_csv
+
+
+# ─────────────────────────────────────────
+# RUN
+# ─────────────────────────────────────────
+if __name__ == "__main__":
+
+    print("\n🚀 STEP 1: Processing TRAIN set...")
+    process_folder(TRAIN_FOLDER, TRAIN_OUTPUT)
+
+    print("\n📊 STEP 2: Evaluating TRAIN predictions vs ground truth...")
+    calculate_recall(TRAIN_OUTPUT, TRAIN_CSV)
+
+    # ── Uncomment below when your test folder is ready ──
+    # print("\n🚀 STEP 3: Processing TEST set...")
+    # process_folder(TEST_FOLDER, TEST_OUTPUT)
+    #
+    # print("\n📊 STEP 4: Evaluating TEST predictions...")
+    # calculate_recall(TEST_OUTPUT, TEST_CSV)
+```
+
+---
+
+## Step 6 — `api.py` *(Optional — REST API)*
+
+**What it does:** Wraps the extractor as a web API. You POST a file → get JSON back.
+
+```python
+# api.py
+
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import JSONResponse
+import tempfile
+import os
+import shutil
+
+from src.document_loader import load_document
+from src.extractor import extract_fields
+
+app = FastAPI(
+    title="Rental Agreement Metadata Extractor",
+    description="Upload a .docx or .png rental agreement and get 6 fields extracted.",
+    version="1.0.0"
+)
+
+
+@app.get("/")
+def root():
+    return {"message": "API is running. POST a file to /extract"}
+
+
+@app.post("/extract")
+async def extract(file: UploadFile = File(...)):
+    """
+    Upload a .docx or .png file.
+    Returns JSON with extracted metadata fields.
+    """
+    allowed = [".docx", ".png"]
+    ext = os.path.splitext(file.filename)[1].lower()
+
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}. Use .docx or .png")
+
+    # Save uploaded file to a temp location
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        content, content_type = load_document(tmp_path)
+        result = extract_fields(content, content_type)
+        result["file_name"] = file.filename
+        return JSONResponse(content=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        os.remove(tmp_path)   # clean up temp file
+```
+
+To start the API server, run:
+```bash
+uvicorn api:app --reload
+```
+
+Then test it:
+```bash
+# Using curl:
+curl -X POST "http://127.0.0.1:8000/extract" -F "file=@data/train/18325926-Rental-Agreement-1.docx"
+
+# Or open browser → http://127.0.0.1:8000/docs  (Swagger UI auto-generated!)
+```
+
+---
+
+## Step 7 — `README.md`
+
+Create this at the root of your project:
+
+```markdown
+# Rental Agreement Metadata Extractor
+
+## Problem Statement
+AI/ML system to extract metadata from rental agreement documents (.docx and .png)
+without using any rule-based (RegEx) approach.
+
+## Fields Extracted
+- Agreement Value
+- Agreement Start Date
+- Agreement End Date
+- Renewal Notice (Days)
+- Party One (Landlord)
+- Party Two (Tenant)
+
+## Approach
+Used **Google Gemini 1.5 Flash** (LLM) to:
+1. Read DOCX files using `python-docx`
+2. Read PNG files using `Pillow` (sent directly to Gemini Vision)
+3. Prompt Gemini to extract all 6 fields and return structured JSON
+4. Normalize and save results to `predictions/test_predictions.csv`
+
+## Project Structure
+```
+Assignment-1/
+├── data/train/          → training documents
+├── data/test/           → test documents
+├── src/
+│   ├── document_loader.py
+│   ├── extractor.py
+│   └── evaluate.py
+├── predictions/         → output CSVs saved here
+├── main.py
+├── api.py
+└── requirements.txt
+```
+
+## Setup & Run
+
+### 1. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Add your Gemini API key
+Edit `src/extractor.py` → replace `YOUR_GEMINI_API_KEY_HERE`
+
+### 3. Run extraction on train set (to verify)
+```bash
+python main.py
+```
+
+### 4. Run on test set
+Add test files to `data/test/` and uncomment the test section in `main.py`
+
+## Predictions
+Test predictions saved to: `predictions/test_predictions.csv`
+
+## Recall Scores (Train Set)
+| Field | Recall |
+|---|---|
+| Agreement Value | X.XX |
+| Agreement Start Date | X.XX |
+| Agreement End Date | X.XX |
+| Renewal Notice (Days) | X.XX |
+| Party One | X.XX |
+| Party Two | X.XX |
+
+## API Usage (Optional)
+```bash
+uvicorn api:app --reload
+# POST file to http://127.0.0.1:8000/extract
+```
+```
+
+---
+
+## ✅ Order To Create Files (Do This Sequence)
+
+| # | Action |
+|---|---|
+| 1 | Create folders: `src/`, `predictions/` |
+| 2 | Create `src/__init__.py` (empty file) |
+| 3 | Create `requirements.txt` → run `pip install -r requirements.txt` |
+| 4 | Get Gemini API key from aistudio.google.com |
+| 5 | Create `src/document_loader.py` |
+| 6 | Create `src/extractor.py` → paste your API key |
+| 7 | Create `src/evaluate.py` |
+| 8 | Create `main.py` |
+| 9 | Run `python main.py` → check `predictions/train_predictions.csv` |
+| 10 | Add test files → uncomment test section in `main.py` → run again |
+| 11 | Create `README.md` → fill in your actual Recall scores |
+| 12 | Create `api.py` (optional) |
+
+---
+
+## 💡 How The Full Flow Works
+
+```
+data/train/ files
+      │
+      ▼
+document_loader.py  →  reads DOCX text / PNG image
+      │
+      ▼
+extractor.py        →  sends to Gemini API with prompt
+      │                 Gemini returns JSON with 6 fields
+      ▼
+main.py             →  collects all results into a DataFrame
+      │
+      ▼
+predictions/train_predictions.csv   (same format as train.csv)
+      │
+      ▼
+evaluate.py         →  compares predictions vs train.csv
+                        prints Recall per field
+```
