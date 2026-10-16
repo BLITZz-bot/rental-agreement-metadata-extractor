@@ -11,7 +11,7 @@ API_KEY = os.getenv("GOOGLE_API_KEY")
 
 genai.configure(api_key=API_KEY)
 
-#We will call our AI model for this project we use gemini 2.0 flash
+#We will call our AI model for this project we use gemini AI
 #Here temperature is set to 0.1 for low randomness, which is good for structured data extraction
 #response_mime_type is set to application/json to ensure the model returns JSON since we are not using regex to parse the response
 #generation_config is used to configure the model's behavior
@@ -25,9 +25,9 @@ PROMPT = """
 You are a legal document analysis assistant specializing in rental agreements.
 Extract the following 6 fields from the rental agreement document provided:
 
-1. Agreement Value       → The monthly rent amount (number only, e.g. 4000)
-2. Agreement Start Date  → The date the agreement starts (format: DD.MM.YYYY)
-3. Agreement End Date    → The date the agreement ends (format: DD.MM.YYYY)
+1. Agreement Value       -> The monthly rent amount (number only, e.g. 4000)
+2. Agreement Start Date  -> The date the agreement starts (format: DD.MM.YYYY)
+3. Agreement End Date    -> The date the agreement ends (format: DD.MM.YYYY)
                              Add exactly N months to the start date to find the end month.
                             Then use the actual LAST CALENDAR DAY of that month.
                             (January=31, February=28 or 29, March=31, April=30, May=31, June=30,July=31, August=31, September=30, October=31, November=30, December=31)
@@ -35,9 +35,9 @@ Extract the following 6 fields from the rental agreement document provided:
                             Example: Start 01.04.2010 + 11 months → end month is March 2011 → last day = 31.03.2011
                             NEVER invent days that don't exist (e.g. February 31 or November 31 do not exist).
                             If an end date is EXPLICITLY stated in the document, use that exact date as-is without recalculating.
-4. Renewal Notice (Days) → Number of days notice required (number only, e.g. 90)
-5. Party One             → The landlord / owner / lessor name (full name as written)
-6. Party Two             → The tenant / resident / lessee name (full name as written)
+4. Renewal Notice (Days) -> Number of days notice required (number only, e.g. 90)
+5. Party One             -> The landlord / owner / lessor name (full name as written)
+6. Party Two             -> The tenant / resident / lessee name (full name as written)
 
 IMPORTANT RULES:
 - Return ONLY a valid JSON object. No explanation, no extra text.
