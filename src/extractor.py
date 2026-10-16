@@ -12,9 +12,8 @@ API_KEY = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=API_KEY)
 
 #We will call our AI model for this project we use gemini AI
-#Here temperature is set to 0.1 for low randomness, which is good for structured data extraction
-#response_mime_type is set to application/json to ensure the model returns JSON since we are not using regex to parse the response
-#generation_config is used to configure the model's behavior
+# Low temp for deterministic JSON output
+
 model = genai.GenerativeModel("gemini-3.1-flash-lite",  generation_config={
     "temperature" : 0.1,
     "response_mime_type": "application/json",
@@ -82,6 +81,7 @@ def extract_fields(content, content_type: str) -> dict:
 
 
     #Parse the JSON response
+    
     try:
         result = json.loads(raw_text)
     except json.JSONDecodeError:
